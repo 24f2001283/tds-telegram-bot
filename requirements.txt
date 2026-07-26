@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+httpx
+openai
+pandas
+requests
+google-cloud-storage
