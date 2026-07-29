@@ -21,6 +21,12 @@ client = OpenAI(
     api_key=OPENAI_API_KEY
 ) if OPENAI_API_KEY else None
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+gemini_client = OpenAI(
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    api_key=GEMINI_API_KEY
+) if GEMINI_API_KEY else None
+
 try:
     storage_client = storage.Client(project=PROJECT_ID)
     bucket = storage_client.bucket(BUCKET_NAME)
@@ -100,32 +106,58 @@ async def telegram_webhook(request: Request):
     
     final_answer = None
     
-    for _ in range(10): # max 10 steps
-        response = client.chat.completions.create(
-            model="gpt-5-nano",
-            messages=messages,
-            tools=tools
-        )
-        msg = response.choices[0].message
-        messages.append(msg.model_dump(exclude_unset=True))
-        run_log.append(msg.model_dump(exclude_unset=True))
-        
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.function.name == "execute_python":
-                    args = json.loads(tc.function.arguments)
-                    out = execute_python(args["code"])
-                    tool_msg = {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "name": tc.function.name,
-                        "content": out
-                    }
-                    messages.append(tool_msg)
-                    run_log.append(tool_msg)
-        else:
-            final_answer = msg.content
-            break
+    configs = [
+        {"client": client, "model": "gpt-5-nano"},
+        {"client": gemini_client, "model": "gemini-3.6-flash"},
+        {"client": gemini_client, "model": "gemini-3.5-flash"},
+        {"client": gemini_client, "model": "gemini-2.5-flash"},
+        {"client": gemini_client, "model": "gemini-1.5-flash"}
+    ]
+    
+    for config in configs:
+        c = config["client"]
+        m = config["model"]
+        if not c:
+            continue
+            
+        try:
+            local_messages = messages.copy()
+            local_run_log = run_log.copy()
+            
+            for _ in range(10): # max 10 steps
+                response = c.chat.completions.create(
+                    model=m,
+                    messages=local_messages,
+                    tools=tools
+                )
+                msg = response.choices[0].message
+                local_messages.append(msg.model_dump(exclude_unset=True))
+                local_run_log.append(msg.model_dump(exclude_unset=True))
+                
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        if tc.function.name == "execute_python":
+                            args = json.loads(tc.function.arguments)
+                            out = execute_python(args["code"])
+                            tool_msg = {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "name": tc.function.name,
+                                "content": out
+                            }
+                            local_messages.append(tool_msg)
+                            local_run_log.append(tool_msg)
+                else:
+                    final_answer = msg.content
+                    break
+                    
+            if final_answer:
+                messages = local_messages
+                run_log = local_run_log
+                break # successfully generated an answer
+        except Exception as e:
+            print(f"Model {m} failed: {e}")
+            continue
             
     # Extract JSON from final_answer
     answer_obj = {}
